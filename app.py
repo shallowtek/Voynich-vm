@@ -1,45 +1,43 @@
 import streamlit as st
 import re
+import json
+from dataclasses import dataclass, asdict
+from typing import Optional, List, Dict, Tuple
 
-# --- VOYNICH ENGINE LOGIC ---
-OPERATORS = {'q': 'Initialization', 'p': 'Natural/Raw', 'f': 'Processed/Pharma', 'ch': 'Biological/Balneo', 't': 'Transition'}
-CORES = {'aiin': 'Vital Heat', 'oke': 'Structural Base', 'ol': 'Fluid Flow', 'che': 'Interface'}
-FINALIZERS = {'dy': 'Stable/NULL', 's': 'Terminal/Halt', 'm': 'Pointer/Link'}
+# --- VOYNICH ENGINE LOGIC (VVM v2) ------------------------------------------
 
-def parse_voynich(text):
-    tokens = re.findall(r'\b[a-z-]+\b', text.lower())
-    results = []
-    for token in tokens:
-        clean = token.replace('-', '')
-        # Pattern: [Prefix] + [Core] + [Suffix]
-        match = re.match(r'^(q|p|f|ch|t)?(aiin|oke|ol|che)(dy|s|m)?$', clean)
-        if match:
-            p, c, s = match.groups()
-            results.append({
-                "token": token,
-                "op": OPERATORS.get(p, "Data Only"),
-                "payload": CORES.get(c, "Unknown Core"),
-                "state": FINALIZERS.get(s, "In Transit")
-            })
-        else:
-            results.append({"token": token, "op": "ERROR", "payload": "Syntax Fault", "state": "Invalid"})
-    return results
+OPERATORS = {
+    'q':  'Initialization/Header',
+    'p':  'Natural/Raw',
+    'f':  'Processed/Pharma',
+    'ch': 'Biological/Balneo',
+    't':  'Transition/Boundary',
+    'k':  'Potentia/Intensifier',   # add now even if unused
+}
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Voynich Virtual Machine v1.0", layout="wide")
-st.title("📜 Voynich Virtual Machine (VVM) PoC")
-st.markdown("### A Deterministic Procedural Almanac Execution Engine")
+CORES = {
+    'aiin': 'Primary Attribute (payload)',
+    'oke':  'Index/Key',
+    'ol':   'Transmission/Flow',
+    'che':  'Interface/Integration',
+}
 
-input_text = st.text_area("Input EVA Transcription Here:", "p-aiin-dy f-aiin-dy ch-aiin-s")
+FINALIZERS = {
+    'dy': 'Stable/NULL (record end)',
+    'y':  'Open/Continue',
+    's':  'Terminal/Halt',
+    'm':  'Pointer/Link',
+}
 
-if st.button("Execute Procedure"):
-    output = parse_voynich(input_text)
-    
-    # Create Visual Execution Trace
-    for res in output:
-        if res['op'] == "ERROR":
-            st.error(f"❌ {res['token']} : Logic Error (Type Mismatch)")
-        else:
-            st.success(f"✔️ **{res['token']}** → {res['op']} | {res['payload']} | {res['state']}")
+# Rule R: [P0] - [C] - [S0]  (hyphenated form preferred)
+TOKEN_RE = re.compile(r'^(?:(q|p|f|ch|t|k)-)?(aiin|oke|ol|che)(?:-(dy|y|s|m))?$')
 
-st.sidebar.info("Based on the 'Voynich as Procedural Almanac' Theory.")
+@dataclass
+class VVMResult:
+    token: str
+    p0: Optional[str]
+    c: Optional[str]
+    s0: Optional[str]
+    op: str
+    payload: str
+    state: str
