@@ -485,9 +485,11 @@ with st.sidebar:
     st.caption("Tip: If finalizers look empty, turn OFF 'Strict cores' and run in linter mode.")
 
 default = (
-    "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
-    "chedy qokeedy otedy qoky qokam\n\n"
-    "# Paste a Stolfi block too; choose 'Stolfi block' or auto-detect.\n"
+    "p-aiin-dy f-aiin-dy ch-aiin-s"
+
+    "q-oke f-ol-m q-aiin-y"
+
+    "t-ol-y p-aiin-dy"
 )
 
 text = st.text_area("Input text", value=default, height=280)
@@ -521,7 +523,22 @@ if st.button("Execute / Lint"):
             idx += len(tks)
 
     else:
-        paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
+        # Remove comment lines and obvious Stolfi tags if user pasted them in plain mode
+clean_lines = []
+for ln in text.splitlines():
+    ln = ln.strip()
+    if not ln:
+        clean_lines.append("")
+        continue
+    if ln.startswith("#"):
+        continue
+    if ln.startswith("<") and ";" in ln and ">" in ln:
+        # likely Stolfi markup line
+        continue
+    clean_lines.append(ln)
+
+clean_text = "\n".join(clean_lines)
+paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip()]
         idx = 0
         for para in paras:
             para = normalize_dashes(para)
