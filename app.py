@@ -2,8 +2,14 @@ import re
 import streamlit as st
 
 # ============================================================
-# Voynich Virtual Machine (VVM) — Robust Validator/Linter
+# Voynich Virtual Machine (VVM) — Validator + Linter (Enhanced UX)
 # Streamlit Cloud friendly: no pandas, no 3.10+ syntax.
+# Goals of this enhancement:
+#  1) Mobile discoverability: make sidebar controls obvious.
+#  2) Reduce confusion: explain "Data Only" / "Unknown Core" clearly.
+#  3) Improve Stolfi ingestion: handle punctuation/marks more robustly.
+#  4) Provide quick-start + About text that's readable and copy/paste safe.
+#  5) Add optional "Summary" + "Core frequency" views without extra deps.
 # ============================================================
 
 # ---- Rule R dictionaries (dossier definitions) ----
@@ -49,11 +55,13 @@ DASH_CHARS = {
     "\u00ad": "-",  # soft hyphen
 }
 
+
 def normalize_dashes(s):
     """Convert various unicode dashes/hyphens to ASCII '-'."""
     for k, v in DASH_CHARS.items():
         s = s.replace(k, v)
     return s
+
 
 def extract_stolfi_payload(text, channels):
     """Pull payload lines from selected Stolfi channels."""
@@ -67,20 +75,25 @@ def extract_stolfi_payload(text, channels):
             out.append(payload)
     return "\n".join(out)
 
+
 def strip_annotations(s):
     """Remove brace groups like {*}, {&I} and other markup."""
     s = re.sub(r"\{[^}]*\}", " ", s)
     return s
 
+
 def clean_payload_for_tokenizing(s):
     """
     Clean Stolfi-ish payload into something tokenizable.
+
     Key behavior:
       - remove {...} annotations
       - normalize dashes
       - REMOVE '!' without splitting words (qa!al -> qaal)
-      - treat '.' and '=' as separators
+      - treat '.', '=' as separators
       - drop obvious garbage like '%' runs
+      - treat stray '*' as separators (Stolfi sometimes has * / **)
+      - treat runs of whitespace as separators
     """
     s = strip_annotations(s)
     s = normalize_dashes(s)
@@ -92,16 +105,19 @@ def clean_payload_for_tokenizing(s):
     # Drop long %%%%% blocks entirely
     s = re.sub(r"%{3,}", " ", s)
 
-    # Make separators into spaces
-    # '.' is the big one in Stolfi; '=' also appears
+    # Replace common separators with spaces
     s = re.sub(r"[.=]+", " ", s)
 
-    # Other punctuation -> space
+    # Make asterisks separators (often editorial / uncertain glyph markers)
+    s = re.sub(r"\*+", " ", s)
+
+    # Other punctuation -> space (keep hyphen)
     s = re.sub(r"[,;:()\[\]\"<>]+", " ", s)
 
     # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 def tokenize_eva(s):
     """
@@ -117,10 +133,10 @@ def tokenize_eva(s):
         t = t.strip()
         if not t:
             continue
-        # Keep only a-z and hyphen
         if re.fullmatch(r"[a-z-]+", t):
             toks.append(t)
     return toks
+
 
 def paragraphize(text):
     """
@@ -133,6 +149,7 @@ def paragraphize(text):
     blocks = [b.strip() for b in re.split(r"\n\s*\n", text.strip()) if b.strip()]
     return blocks
 
+
 def parse_token_hyphen_safe(tok, strict=True):
     """
     Parse EVA token using Rule R with correct hyphen semantics.
@@ -142,7 +159,7 @@ def parse_token_hyphen_safe(tok, strict=True):
       ch-aiin-s
       q-oke
       f-ol-m
-    Also supports bare tokens (aiin, qokeedy etc) via regex fallback.
+    Also supports bare tokens via regex fallback.
     """
     original = tok
     token = normalize_dashes(tok.strip().lower())
@@ -166,19 +183,18 @@ def parse_token_hyphen_safe(tok, strict=True):
         s0 = ""
         core = ""
 
-        # prefix (p, f, q, ch, t, k)
+        # prefix
         if parts and parts[0] in OPERATORS:
             p0 = parts[0]
             parts = parts[1:]
 
-        # suffix (dy, y, s, m)
+        # suffix
         if parts and parts[-1] in FINALIZERS:
             s0 = parts[-1]
             parts = parts[:-1]
 
-        core = "".join(parts)  # remaining bits, usually a single core
+        core = "".join(parts)
 
-        # If strict, core must be known
         if strict and core and core not in CORES:
             return {
                 "token": original, "P0": p0, "C": core, "S0": s0,
@@ -190,7 +206,6 @@ def parse_token_hyphen_safe(tok, strict=True):
                 "Exception": "",
             }
 
-        # Accept (even if core unknown in linter mode)
         return {
             "token": original,
             "P0": p0,
@@ -247,6 +262,7 @@ def parse_token_hyphen_safe(tok, strict=True):
         "Exception": "",
     }
 
+
 def classify_exceptions(records, paragraph_bounds, strict):
     """
     Adds E1/E2/E3 heuristics as *exceptions*, not parse errors.
@@ -260,22 +276,21 @@ def classify_exceptions(records, paragraph_bounds, strict):
         if not r["ValidRuleR"]:
             continue
 
-        # E2
         if r["P0"] == "q" and r["S0"] == "s":
             r["Exception"] = "E2 (Type Mismatch: q- with -s)"
 
-        # E3 only in linter mode (strict=False)
         if (not strict) and r["C"]:
-            # Detect aiin-like variants conservatively
             if r["C"].startswith("aii") and r["C"] != "aiin":
                 if re.fullmatch(r"aii[a-z]{1,3}", r["C"]):
                     if not r["Exception"]:
                         r["Exception"] = "E3 (Off-by-One Drift: aiin-variant core)"
 
-    # E1 paragraph-level (only if we have paragraph segmentation)
+    # E1 paragraph-level
     for (a, b) in paragraph_bounds:
-        ops = [records[i]["P0"] for i in range(a, b + 1)
-               if records[i]["ValidRuleR"] and records[i]["P0"]]
+        ops = [
+            records[i]["P0"] for i in range(a, b + 1)
+            if records[i]["ValidRuleR"] and records[i]["P0"]
+        ]
         if not ops:
             continue
 
@@ -292,6 +307,7 @@ def classify_exceptions(records, paragraph_bounds, strict):
 
     return records
 
+
 def dy_paragraph_audit(records, paragraph_bounds):
     """Compare -dy rate at paragraph ends vs mid-paragraph."""
     dy_last = 0
@@ -302,11 +318,9 @@ def dy_paragraph_audit(records, paragraph_bounds):
     for (a, b) in paragraph_bounds:
         if a > b:
             continue
-        # last token
         last_total += 1
         if records[b].get("S0") == "dy":
             dy_last += 1
-        # middle tokens: a..b-1
         for i in range(a, b):
             mid_total += 1
             if records[i].get("S0") == "dy":
@@ -323,6 +337,7 @@ def dy_paragraph_audit(records, paragraph_bounds):
         "dy_last_rate": dy_last_rate,
         "dy_mid_rate": dy_mid_rate,
     }
+
 
 def to_csv(rows):
     """Minimal CSV serializer (no pandas)."""
@@ -341,151 +356,142 @@ def to_csv(rows):
         out.append(",".join(line))
     return "\n".join(out)
 
+
+def counts_by_key(records, key, only_valid=True):
+    """Simple frequency counter (no pandas)."""
+    counts = {}
+    for r in records:
+        if only_valid and (not r.get("ValidRuleR")):
+            continue
+        v = r.get(key, "")
+        if not v:
+            continue
+        counts[v] = counts.get(v, 0) + 1
+    # return sorted list of tuples
+    items = list(counts.items())
+    items.sort(key=lambda x: (-x[1], x[0]))
+    return items
+
+
 # =========================
 # Streamlit UI
 # =========================
 st.set_page_config(page_title="Voynich VVM", layout="wide")
 st.title("📜 Voynich Virtual Machine (VVM) — Validator + Linter")
 
-with st.expander("ℹ️ About this project", expanded=False):
-    st.markdown("""
-    [## About the Voynich Virtual Machine (VVM)
+# --- Mobile discoverability banner ---
+st.info(
+    "💡 **Mobile tip:** open the sidebar using the **☰ menu** to access filters (Strict mode, Stolfi channels, and display controls). "
+    "Also: **‘Unknown/Unregistered Core’ is not a parse failure**—it means the core is not yet in the registered lexicon."
+)
 
-The **Voynich Virtual Machine (VVM)** is an experimental execution and validation environment for a structural theory of the Voynich Manuscript that treats the script as a **deterministic procedural system**, rather than a natural language.
+# --- Quick Start (reduces first-run confusion) ---
+with st.expander("🚀 Quick Start (2 minutes)", expanded=True):
+    st.markdown(
+        """
+**1) Plain EVA tokens**  
+Paste space-separated tokens like: `p-aiin-dy f-aiin-dy ch-aiin-s`
 
-Under this model, Voynich tokens are interpreted as **data packets** composed of three logical fields:
+**2) Stolfi blocks**  
+Paste full `<...;H>` lines. Leave input mode on **Auto-detect** (or choose **Stolfi block**) and select channels (H/T/F/G/U) in the sidebar.
+
+**3) Strict vs Linter mode**  
+- **Strict ON**: only cores `aiin / oke / ol / che` are considered valid.  
+- **Strict OFF (Linter)**: any core can be structurally valid; unknown cores are surfaced as *unregistered* (for lexicon expansion).
+
+**4) Read the output**  
+- **Parse Errors** = Rule R mismatch (token doesn’t fit the structure).  
+- **Exceptions** = E1/E2/E3 “glitches” (token fits, but violates a heuristic consistency rule).
+        """
+    )
+
+# --- About section (copy/paste safe, no bracket noise) ---
+ABOUT_MD = """
+## About the Voynich Virtual Machine (VVM)
+
+The **Voynich Virtual Machine (VVM)** is an experimental validation environment for a structural hypothesis: that Voynich tokens behave like **deterministic procedural packets**, not natural language words.
+
+Under this model, each token is parsed as:
 
 > **[ Header (P₀) | Payload (Core) | Footer (S₀) ]**
 
-Where:
+### Rule R (Formal Token Architecture)
 
-- **Headers (Operators)** define the *execution context*  
-  (e.g. initialization, natural state, processed state)
-- **Cores** encode *stable identity variables* shared across manuscript domains  
-  (botanical, pharmaceutical, balneological, astronomical)
-- **Footers (Finalizers)** encode *state termination or continuation* semantics
+All tokens are evaluated against a strict 3-field constraint:
 
----
+**P₀ + C + S₀**
 
-### Rule R: Formal Token Architecture
-
-All tokens evaluated by the VVM are tested against **Rule R**, a strict three-field structural constraint:
-
-[P₀] + [C] + [S₀]
-
-- **P₀ (Operator / Header)**  
-  `q` (Initialization), `p` (Natural), `f` (Processed),  
-  `t` (Transition), `k` (Potentia), `ch` (Biological)
-
-- **C (Core / Payload)**  
-  `aiin`, `oke`, `ol`, `che` (extensible under linter mode)
-
-- **S₀ (Finalizer / Footer)**  
-  `dy` (Stable / End-of-record),  
-  `y` (Open / Continue),  
-  `s` (Terminal),  
-  `m` (Pointer / Link)
-
-Tokens that violate this structure are flagged as **logic errors**, not spelling mistakes.
-
----
+- **P₀ (Operator / Header)**: `q` (Init), `p` (Natural), `f` (Processed), `t` (Transition), `k` (Potentia), `ch` (Biological)
+- **C (Core / Payload)**: `aiin`, `oke`, `ol`, `che` *(extensible in Linter mode)*
+- **S₀ (Finalizer / Footer)**: `dy` (Stable/NULL), `y` (Open), `s` (Terminal), `m` (Pointer)
 
 ### Execution Model
 
-The VVM does **not translate** Voynichese.
+The VVM does **not translate** Voynichese.  
+Instead, it produces a **structural trace** of how Core-IDs move through contexts.
 
-Instead, it executes a **structural trace** of how identity variables move through different procedural contexts.
+Example trace:
 
-Example execution trace:
+- `p-aiin-dy` → Natural/Raw + `aiin` + Stable
+- `f-aiin-dy` → Processed/Pharma + `aiin` + Stable
+- `ch-aiin-s` → Biological/Balneo + `aiin` + Terminal
 
-p-aiin-dy   → Natural state (Herbal) f-aiin-dy   → Processed state (Pharma) ch-aiin-s   → Biological execution (Balneological)
+### Error Detection (Human Execution Faults)
 
-This demonstrates a **state transition** of a stable Core-ID (`aiin`) across manuscript sections.
+The linter flags consistency anomalies treated as **execution glitches**, not spelling mistakes:
 
----
+- **E1 — Contextual Cache**: `p-` occurs inside a paragraph dominated by pharma-ish operators (`f/k/ch/t`)
+- **E2 — Type Mismatch**: `q-` occurs with terminal `-s`
+- **E3 — Off-by-One Drift**: `aiin`-like core mutations (only in Linter mode)
 
-### Error Detection & Human Execution Faults
+### Inputs
 
-The VVM includes a rule-based **linter** that detects execution anomalies consistent with *human procedural copying*, including:
+- **Plain EVA tokens**
+- **Stolfi transcription blocks** with selectable channels: H / T / F / G / U
 
-- **E1 — Contextual Cache Errors**  
-  (e.g. Natural prefixes inside Pharma-dominant paragraphs)
+### Links
 
-- **E2 — Type Mismatches**  
-  (e.g. Initialization headers combined with terminal suffixes)
+- Repo: https://github.com/shallowtek/Voynich-vm
+- App: https://voynich-vm.streamlit.app/
+"""
 
-- **E3 — Off-by-One Drift**  
-  (core mutations in dense repetitive sequences)
+with st.expander("ℹ️ About this project", expanded=False):
+    st.markdown(ABOUT_MD)
 
-These are treated as evidence of **human rule execution**, not noise or cipher corruption.
-
----
-
-### Input Formats
-
-The VVM accepts:
-
-- **Plain EVA-style tokens**
-- **Full Stolfi transcription blocks**  
-  (with channel selection: H / T / F / G / U)
-
-Paragraph boundaries are respected when auditing termination behavior (e.g. `-dy` placement).
-
----
-
-### What This Tool Is (and Is Not)
-
-**This tool is:**
-- A procedural validator
-- A structural hypothesis tester
-- A falsifiable execution model
-
-**This tool is not:**
-- A translation engine
-- A linguistic decoder
-- A claim of semantic meaning
-
----
-
-### Status
-
-This project is in **experimental / research mode**.
-
-All outputs are traceable, reproducible, and intended for collaborative analysis.
-
-Source code and documentation:
-- https://github.com/shallowtek/Voynich-vm
-- https://voynich-vm.streamlit.app/]
-
-    """)
-    
+# --- Main instruction line ---
 st.markdown(
     "Paste **plain EVA tokens** or a **full Stolfi block**. "
-    "This app extracts tokens, applies **Rule R**, and produces a **Parse Error** + **Exception (E1/E2/E3)** log."
+    "This app extracts tokens, applies **Rule R**, and produces **Parse Errors** plus an **Exception (E1/E2/E3)** log."
 )
 
 with st.sidebar:
-    st.header("Options")
+    st.markdown("## ⚙️ Controls & Filters")
+    st.caption("On mobile, open this sidebar via the **☰ menu** at top-left.")
+
     input_mode = st.radio("Input type", ["Auto-detect", "Plain EVA", "Stolfi block"], index=0)
     strict = st.toggle("Strict cores only (aiin/oke/ol/che)", value=False)
+    st.caption("Strict ON = unknown cores become **Parse Errors**. Strict OFF = unknown cores are **Unregistered** (useful for discovery).")
 
     st.subheader("Stolfi channels")
     channels = st.multiselect("Use channels", ["H", "T", "F", "G", "U"], default=["H"])
+    st.caption("If you paste a Stolfi block, channel selection controls which witness stream is parsed.")
 
     st.subheader("Display")
     max_trace = st.slider("Max trace rows (UI safety)", 0, 500, 120, 10)
-    show_table = st.toggle("Show parsed table", True)
+
+    # Mobile-friendly defaults: keep big tables optional
+    show_table = st.toggle("Show parsed table", False)
     show_parse_errors = st.toggle("Show parse errors", True)
     show_exceptions = st.toggle("Show exception log (E1/E2/E3)", True)
     show_dy_audit = st.toggle("Show -dy audit", True)
+    show_summary = st.toggle("Show summary (frequencies)", True)
 
 default = (
     "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
     "q-oke f-ol-m q-aiin-s\n\n"
-    "# You can paste a Stolfi block too; choose 'Stolfi block' or auto-detect.\n"
+    "# Tip: paste Stolfi blocks too (auto-detect works)."
 )
-st.sidebar.caption("These settings change validation logic and error detection")
-text = st.text_area("Input text (see sidebar for parser & validation options)", value=default, height=280)
+text = st.text_area("Input text", value=default, height=280)
 
 if st.button("Execute / Lint"):
     # Detect input kind
@@ -502,7 +508,7 @@ if st.button("Execute / Lint"):
     if detected == "stolfi":
         payload = extract_stolfi_payload(text, channels=set(channels))
         if not payload.strip():
-            st.error("No Stolfi payload extracted. Check channels and ensure your paste contains '<...;H>' style lines.")
+            st.error("No Stolfi payload extracted. Check channels and ensure your paste includes '<...;H>' style lines.")
             st.stop()
 
         paras = paragraphize(payload)
@@ -514,14 +520,13 @@ if st.button("Execute / Lint"):
             tokens.extend(tks)
             bounds.append((idx, idx + len(tks) - 1))
             idx += len(tks)
-
     else:
         # Plain EVA: split on blank lines as paragraphs
         paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
         idx = 0
         for para in paras:
             para = normalize_dashes(para)
-            # extract eva-ish tokens including hyphenated
+            # Extract eva-ish tokens including hyphenated tokens
             tks = [t.lower() for t in re.findall(r"[a-zA-Z-]+", para) if re.fullmatch(r"[a-zA-Z-]+", t)]
             tks = [t.lower() for t in tks if re.search(r"[a-z]", t.lower())]
             if not tks:
@@ -544,6 +549,30 @@ if st.button("Execute / Lint"):
     c2.metric("Valid Rule R", valid)
     c3.metric("Parse Errors", parse_errors)
     c4.metric("Exceptions (E1/E2/E3)", exceptions)
+
+    # Interpretive note right above outputs (reduces "it looks broken" reports)
+    st.caption(
+        "ℹ️ **Interpretation note**: `Data Only` means no operator (P₀) was detected. "
+        "`Unknown/Unregistered Core` means the token fits Rule R structurally but the core is not currently defined in the lexicon "
+        "(expected in **Linter mode**)."
+    )
+
+    # Summary (frequencies) helps on mobile: quick sanity check without scrolling tables
+    if show_summary:
+        st.subheader("Summary")
+        op_counts = counts_by_key(records, "P0", only_valid=True)
+        core_counts = counts_by_key(records, "C", only_valid=True)
+        s0_counts = counts_by_key(records, "S0", only_valid=True)
+
+        colA, colB, colC = st.columns(3)
+        colA.markdown("**Operators (P₀)**")
+        colA.write(op_counts[:12] if op_counts else [])
+
+        colB.markdown("**Cores (C)**")
+        colB.write(core_counts[:12] if core_counts else [])
+
+        colC.markdown("**Finalizers (S₀)**")
+        colC.write(s0_counts[:12] if s0_counts else [])
 
     # Trace
     if max_trace > 0:
@@ -568,7 +597,7 @@ if st.button("Execute / Lint"):
                 st.success(base)
 
         if total > max_trace:
-            st.info("Trace truncated for performance. Use the table below for full output.")
+            st.info("Trace truncated for performance. Increase max trace in the sidebar or use the CSV download.")
 
     # Tables
     if show_table:
@@ -615,3 +644,4 @@ if st.button("Execute / Lint"):
         file_name="vvm_results.csv",
         mime="text/csv",
     )
+```0
