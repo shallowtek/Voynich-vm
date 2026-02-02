@@ -41,7 +41,17 @@ LINE_RE = re.compile(r"<[^>]+;([HTFGU])>\s*(.*)$")
 
 # Regex fallback for non-hyphen tokens
 RULE_R_STRICT = re.compile(r"^(q|p|f|ch|t|k)?(aiin|oke|ol|che)(dy|y|s|m)?$")
-RULE_R_LINTER = re.compile(r"^(q|p|f|ch|t|k)?([a-z]+)(dy|y|s|m)?$")
+RULE_R_LINTER = re.compile(r"^(q|p|f|ch|t|k)?([a-z]+?)(dy|y|s|m)?$")
+
+FINALIZER_KEYS = sorted(FINALIZERS.keys(), key=len, reverse=True)  # ["dy","y","s","m"]
+
+def split_suffix(clean):
+    """Return (stem, s0) where s0 is one of FINALIZERS if present at end."""
+    for suf in FINALIZER_KEYS:
+        if clean.endswith(suf) and len(clean) > len(suf):
+            return clean[:-len(suf)], suf
+    return clean, ""
+
 
 # Map of common unicode hyphen/dash chars -> ASCII hyphen
 DASH_CHARS = {
@@ -219,10 +229,36 @@ def parse_token_hyphen_safe(tok, strict=True):
             "Exception": "",
         }
 
-    # Regex fallback for non-hyphen tokens
     clean = token
     rule = RULE_R_STRICT if strict else RULE_R_LINTER
     m = rule.match(clean)
+
+    if not strict:
+    # operator at start (q/p/f/ch/t/k)
+    p0 = ""
+    stem = clean
+    # handle 'ch' specifically before single-letter ops
+    if stem.startswith("ch"):
+        p0, stem = "ch", stem[2:]
+    elif stem and stem[0] in OPERATORS:
+        p0, stem = stem[0], stem[1:]
+
+    stem, s0 = split_suffix(stem)
+    core = stem
+
+    return {
+        "token": original,
+        "P0": p0,
+        "C": core,
+        "S0": s0,
+        "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
+        "CoreMeaning": CORES.get(core, "Unknown/Unregistered Core") if core else "Missing Core",
+        "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
+        "ValidRuleR": True if core else False,
+        "ParseError": "" if core else "Missing core",
+        "Exception": "",
+    }
+    
     if not m:
         return {
             "token": original, "P0": "", "C": "", "S0": "",
