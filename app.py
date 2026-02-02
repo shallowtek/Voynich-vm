@@ -3,10 +3,10 @@ import streamlit as st
 
 # ============================================================
 # Voynich Virtual Machine (VVM) — Robust Validator/Linter
-# Works on Streamlit Cloud without pandas, without Python 3.10+ syntax.
+# Streamlit Cloud friendly: no pandas, no 3.10+ syntax.
 # ============================================================
 
-# ---- Rule R dictionaries (your dossier definitions) ----
+# ---- Rule R dictionaries (dossier definitions) ----
 OPERATORS = {
     "q": "Initialization/Header",
     "p": "Natural/Raw",
@@ -33,12 +33,27 @@ FINALIZERS = {
 # ---- Stolfi line matcher: <f111r.P.1;H>  payload ----
 LINE_RE = re.compile(r"<[^>]+;([HTFGU])>\s*(.*)$")
 
-# Strict: only known cores
+# Regex fallback for non-hyphen tokens
 RULE_R_STRICT = re.compile(r"^(q|p|f|ch|t|k)?(aiin|oke|ol|che)(dy|y|s|m)?$")
-
-# Linter: allow unknown cores but still enforce P0/S0
 RULE_R_LINTER = re.compile(r"^(q|p|f|ch|t|k)?([a-z]+)(dy|y|s|m)?$")
 
+# Map of common unicode hyphen/dash chars -> ASCII hyphen
+DASH_CHARS = {
+    "\u2010": "-",  # hyphen
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2012": "-",  # figure dash
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u2015": "-",  # horizontal bar
+    "\u2212": "-",  # minus sign
+    "\u00ad": "-",  # soft hyphen
+}
+
+def normalize_dashes(s):
+    """Convert various unicode dashes/hyphens to ASCII '-'."""
+    for k, v in DASH_CHARS.items():
+        s = s.replace(k, v)
+    return s
 
 def extract_stolfi_payload(text, channels):
     """Pull payload lines from selected Stolfi channels."""
@@ -52,38 +67,65 @@ def extract_stolfi_payload(text, channels):
             out.append(payload)
     return "\n".join(out)
 
-
 def strip_annotations(s):
     """Remove brace groups like {*}, {&I} and other markup."""
     s = re.sub(r"\{[^}]*\}", " ", s)
     return s
 
+def clean_payload_for_tokenizing(s):
+    """
+    Clean Stolfi-ish payload into something tokenizable.
+    Key behavior:
+      - remove {...} annotations
+      - normalize dashes
+      - REMOVE '!' without splitting words (qa!al -> qaal)
+      - treat '.' and '=' as separators
+      - drop obvious garbage like '%' runs
+    """
+    s = strip_annotations(s)
+    s = normalize_dashes(s)
+    s = s.lower()
+
+    # Remove uncertainty markers without splitting
+    s = s.replace("!", "")
+
+    # Drop long %%%%% blocks entirely
+    s = re.sub(r"%{3,}", " ", s)
+
+    # Make separators into spaces
+    # '.' is the big one in Stolfi; '=' also appears
+    s = re.sub(r"[.=]+", " ", s)
+
+    # Other punctuation -> space
+    s = re.sub(r"[,;:()\"<>]+", " ", s)
+
+    # Collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 def tokenize_eva(s):
     """
-    Convert payload into EVA-ish tokens.
-    - Treat . ! = * , : ; etc as separators
-    - Keep hyphens if present, but parse by removing hyphens later
+    Convert cleaned payload into EVA-ish tokens.
+    We keep hyphens if present (for user-entered tokens like p-aiin-dy).
+    For Stolfi payload, tokens are usually bare a-z.
     """
-    s = strip_annotations(s)
-    s = s.lower()
-
-    # Replace common punctuation separators with spaces
-    s = re.sub(r"[.!*=,:;()\[\]\"<>]+", " ", s)
-    # Collapse whitespace
-    s = re.sub(r"\s+", " ", s).strip()
-
+    s = clean_payload_for_tokenizing(s)
+    if not s:
+        return []
     toks = []
     for t in s.split(" "):
+        t = t.strip()
+        if not t:
+            continue
+        # Keep only a-z and hyphen
         if re.fullmatch(r"[a-z-]+", t):
             toks.append(t)
     return toks
 
-
 def paragraphize(text):
     """
-    For Stolfi: treat each extracted line as a paragraph segment.
-    For plain: split on blank lines.
+    For extracted Stolfi payload: each non-empty line is its own paragraph unit.
+    For plain EVA: paragraphs split by blank lines.
     """
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if lines:
@@ -94,72 +136,106 @@ def paragraphize(text):
 def parse_token_hyphen_safe(tok, strict=True):
     """
     Parse EVA token using Rule R with correct hyphen semantics.
+
     Supports:
       p-aiin-dy
       ch-aiin-s
       q-oke
       f-ol-m
+    Also supports bare tokens (aiin, qokeedy etc) via regex fallback.
     """
-    token = tok.strip().lower()
+    original = tok
+    token = normalize_dashes(tok.strip().lower())
 
-    # Keep only EVA-ish
+    # Only EVA-ish
     if not re.fullmatch(r"[a-z-]+", token):
         return {
-            "token": tok, "P0": "", "C": "", "S0": "",
-            "Operator": "ERROR", "CoreMeaning": "Non-EVA token",
-            "Finalizer": "Invalid", "ValidRuleR": False,
-            "ErrorClass": "Rule R mismatch",
+            "token": original, "P0": "", "C": "", "S0": "",
+            "Operator": "ERROR",
+            "CoreMeaning": "Non-EVA token",
+            "Finalizer": "Invalid",
+            "ValidRuleR": False,
+            "ParseError": "Non-EVA token",
+            "Exception": "",
         }
 
-    parts = token.split("-") if "-" in token else [token]
+    # Hyphen-aware parse first
+    if "-" in token:
+        parts = [p for p in token.split("-") if p]  # protect against double hyphens
+        p0 = ""
+        s0 = ""
+        core = ""
 
-    p0 = ""
-    s0 = ""
-    core = ""
-
-    # --- If hyphenated, parse by segments ---
-    if len(parts) >= 2:
-        # prefix
-        if parts[0] in OPERATORS:
+        # prefix (p, f, q, ch, t, k)
+        if parts and parts[0] in OPERATORS:
             p0 = parts[0]
-            parts = parts[1:]  # consume
+            parts = parts[1:]
 
-        # suffix
+        # suffix (dy, y, s, m)
         if parts and parts[-1] in FINALIZERS:
             s0 = parts[-1]
-            parts = parts[:-1]  # consume
+            parts = parts[:-1]
 
-        core = "".join(parts)  # usually one element, but join safely
+        core = "".join(parts)  # remaining bits, usually a single core
 
-    else:
-        # --- Non-hyphen form fallback: try regex ---
-        clean = parts[0]
-        rule = RULE_R_STRICT if strict else RULE_R_LINTER
-        m = rule.match(clean)
-        if not m:
+        # If strict, core must be known
+        if strict and core and core not in CORES:
             return {
-                "token": tok, "P0": "", "C": "", "S0": "",
-                "Operator": "ERROR", "CoreMeaning": "Syntax Fault / Rule-R mismatch",
-                "Finalizer": "Invalid", "ValidRuleR": False,
-                "ErrorClass": "Rule R mismatch",
+                "token": original, "P0": p0, "C": core, "S0": s0,
+                "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
+                "CoreMeaning": "Unknown Core (strict mode)",
+                "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
+                "ValidRuleR": False,
+                "ParseError": "Unknown core (strict)",
+                "Exception": "",
             }
-        p0, core, s0 = m.groups()
-        p0 = p0 or ""
-        s0 = s0 or ""
 
-    # --- Validate core set in strict mode ---
+        # Accept (even if core unknown in linter mode)
+        return {
+            "token": original,
+            "P0": p0,
+            "C": core,
+            "S0": s0,
+            "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
+            "CoreMeaning": CORES.get(core, "Unknown/Unregistered Core") if core else "Missing Core",
+            "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
+            "ValidRuleR": True if core else False,
+            "ParseError": "" if core else "Missing core",
+            "Exception": "",
+        }
+
+    # Regex fallback for non-hyphen tokens
+    clean = token
+    rule = RULE_R_STRICT if strict else RULE_R_LINTER
+    m = rule.match(clean)
+    if not m:
+        return {
+            "token": original, "P0": "", "C": "", "S0": "",
+            "Operator": "ERROR",
+            "CoreMeaning": "Syntax Fault / Rule-R mismatch",
+            "Finalizer": "Invalid",
+            "ValidRuleR": False,
+            "ParseError": "Rule R mismatch",
+            "Exception": "",
+        }
+
+    p0, core, s0 = m.groups()
+    p0 = p0 or ""
+    s0 = s0 or ""
+
     if strict and core not in CORES:
         return {
-            "token": tok, "P0": p0, "C": core, "S0": s0,
+            "token": original, "P0": p0, "C": core, "S0": s0,
             "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
             "CoreMeaning": "Unknown Core (strict mode)",
             "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
             "ValidRuleR": False,
-            "ErrorClass": "Unknown core in strict mode",
+            "ParseError": "Unknown core (strict)",
+            "Exception": "",
         }
 
     return {
-        "token": tok,
+        "token": original,
         "P0": p0,
         "C": core,
         "S0": s0,
@@ -167,36 +243,42 @@ def parse_token_hyphen_safe(tok, strict=True):
         "CoreMeaning": CORES.get(core, "Unknown/Unregistered Core"),
         "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
         "ValidRuleR": True,
-        "ErrorClass": "",
+        "ParseError": "",
+        "Exception": "",
     }
 
-
-def classify_errors(records, paragraph_bounds):
+def classify_exceptions(records, paragraph_bounds, strict):
     """
-    Adds E1/E2/E3 heuristics.
+    Adds E1/E2/E3 heuristics as *exceptions*, not parse errors.
 
     E2: q- with -s
-    E3: aiin drift (aiim/aiir/aiil etc) when in linter mode
+    E3: aiin drift (aiim/aiir/aiil etc) when NOT strict (linter mode)
     E1: p- inside a paragraph dominated by pharma-ish prefixes (f/k/ch/t)
     """
     # E2 + E3 token-level
     for r in records:
         if not r["ValidRuleR"]:
             continue
-        if r["P0"] == "q" and r["S0"] == "s":
-            r["ErrorClass"] = "E2 (Type Mismatch: q- with -s)"
-        # E3 drift: only meaningful if we allow unknown cores (linter mode)
-        if r["C"] and r["C"].startswith("aii") and r["C"] != "aiin":
-            # very conservative drift rule
-            if re.fullmatch(r"aii[a-z]{1,3}", r["C"]):
-                if not r["ErrorClass"]:
-                    r["ErrorClass"] = "E3 (Off-by-One Drift: aiin-variant core)"
 
-    # E1 paragraph-level
+        # E2
+        if r["P0"] == "q" and r["S0"] == "s":
+            r["Exception"] = "E2 (Type Mismatch: q- with -s)"
+
+        # E3 only in linter mode (strict=False)
+        if (not strict) and r["C"]:
+            # Detect aiin-like variants conservatively
+            if r["C"].startswith("aii") and r["C"] != "aiin":
+                if re.fullmatch(r"aii[a-z]{1,3}", r["C"]):
+                    if not r["Exception"]:
+                        r["Exception"] = "E3 (Off-by-One Drift: aiin-variant core)"
+
+    # E1 paragraph-level (only if we have paragraph segmentation)
     for (a, b) in paragraph_bounds:
-        ops = [records[i]["P0"] for i in range(a, b + 1) if records[i]["ValidRuleR"] and records[i]["P0"]]
+        ops = [records[i]["P0"] for i in range(a, b + 1)
+               if records[i]["ValidRuleR"] and records[i]["P0"]]
         if not ops:
             continue
+
         counts = {}
         for o in ops:
             counts[o] = counts.get(o, 0) + 1
@@ -205,11 +287,10 @@ def classify_errors(records, paragraph_bounds):
         pharmaish = dominant in ("f", "k", "ch", "t")
         if pharmaish:
             for i in range(a, b + 1):
-                if records[i]["ValidRuleR"] and records[i]["P0"] == "p" and not records[i]["ErrorClass"]:
-                    records[i]["ErrorClass"] = "E1 (Contextual Cache: p- inside pharma-ish paragraph)"
+                if records[i]["ValidRuleR"] and records[i]["P0"] == "p" and not records[i]["Exception"]:
+                    records[i]["Exception"] = "E1 (Contextual Cache: p- inside pharma-ish paragraph)"
 
     return records
-
 
 def dy_paragraph_audit(records, paragraph_bounds):
     """Compare -dy rate at paragraph ends vs mid-paragraph."""
@@ -243,7 +324,6 @@ def dy_paragraph_audit(records, paragraph_bounds):
         "dy_mid_rate": dy_mid_rate,
     }
 
-
 def to_csv(rows):
     """Minimal CSV serializer (no pandas)."""
     if not rows:
@@ -256,11 +336,10 @@ def to_csv(rows):
             v = str(r.get(c, ""))
             v = v.replace('"', '""')
             if "," in v or "\n" in v:
-                v = f'"{v}"'
+                v = '"{0}"'.format(v)
             line.append(v)
         out.append(",".join(line))
     return "\n".join(out)
-
 
 # =========================
 # Streamlit UI
@@ -270,12 +349,11 @@ st.title("📜 Voynich Virtual Machine (VVM) — Validator + Linter")
 
 st.markdown(
     "Paste **plain EVA tokens** or a **full Stolfi block**. "
-    "This app extracts tokens, applies **Rule R**, and produces a lint/error log."
+    "This app extracts tokens, applies **Rule R**, and produces a **Parse Error** + **Exception (E1/E2/E3)** log."
 )
 
 with st.sidebar:
     st.header("Options")
-
     input_mode = st.radio("Input type", ["Auto-detect", "Plain EVA", "Stolfi block"], index=0)
     strict = st.toggle("Strict cores only (aiin/oke/ol/che)", value=False)
 
@@ -283,17 +361,22 @@ with st.sidebar:
     channels = st.multiselect("Use channels", ["H", "T", "F", "G", "U"], default=["H"])
 
     st.subheader("Display")
-    max_trace = st.slider("Max trace rows (UI safety)", 0, 300, 80, 10)
-    show_table = st.toggle("Show table", True)
-    show_errors = st.toggle("Show error log", True)
+    max_trace = st.slider("Max trace rows (UI safety)", 0, 500, 120, 10)
+    show_table = st.toggle("Show parsed table", True)
+    show_parse_errors = st.toggle("Show parse errors", True)
+    show_exceptions = st.toggle("Show exception log (E1/E2/E3)", True)
     show_dy_audit = st.toggle("Show -dy audit", True)
 
-default = "p-aiin-dy f-aiin-dy ch-aiin-s\n\nq-oke f-ol-m q-aiin-s"
+default = (
+    "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
+    "q-oke f-ol-m q-aiin-s\n\n"
+    "# You can paste a Stolfi block too; choose 'Stolfi block' or auto-detect.\n"
+)
 
-text = st.text_area("Input text", value=default, height=260)
+text = st.text_area("Input text", value=default, height=280)
 
 if st.button("Execute / Lint"):
-    # detect
+    # Detect input kind
     detected = "plain"
     if input_mode == "Stolfi block":
         detected = "stolfi"
@@ -301,14 +384,16 @@ if st.button("Execute / Lint"):
         if re.search(r"<[^>]+;[HTFGU]>", text):
             detected = "stolfi"
 
+    tokens = []
+    bounds = []
+
     if detected == "stolfi":
         payload = extract_stolfi_payload(text, channels=set(channels))
         if not payload.strip():
-            st.error("No Stolfi payload extracted. Check channels and that your paste includes '<...;H>' style lines.")
+            st.error("No Stolfi payload extracted. Check channels and ensure your paste contains '<...;H>' style lines.")
             st.stop()
+
         paras = paragraphize(payload)
-        tokens = []
-        bounds = []
         idx = 0
         for para in paras:
             tks = tokenize_eva(para)
@@ -317,34 +402,38 @@ if st.button("Execute / Lint"):
             tokens.extend(tks)
             bounds.append((idx, idx + len(tks) - 1))
             idx += len(tks)
+
     else:
-        # plain: split on blank lines as paragraphs
+        # Plain EVA: split on blank lines as paragraphs
         paras = [p.strip() for p in re.split(r"\n\s*\n", text.strip()) if p.strip()]
-        tokens = []
-        bounds = []
         idx = 0
         for para in paras:
-            tks = [t.lower() for t in re.findall(r"[a-z-]+", para.lower())]
+            para = normalize_dashes(para)
+            # extract eva-ish tokens including hyphenated
+            tks = [t.lower() for t in re.findall(r"[a-zA-Z-]+", para) if re.fullmatch(r"[a-zA-Z-]+", t)]
+            tks = [t.lower() for t in tks if re.search(r"[a-z]", t.lower())]
             if not tks:
                 continue
             tokens.extend(tks)
             bounds.append((idx, idx + len(tks) - 1))
             idx += len(tks)
 
-    # parse
+    # Parse tokens
     records = [parse_token_hyphen_safe(t, strict=strict) for t in tokens]
-    records = classify_errors(records, bounds)
+    records = classify_exceptions(records, bounds, strict=strict)
 
     total = len(records)
     valid = sum(1 for r in records if r["ValidRuleR"])
-    errors = total - valid
+    parse_errors = sum(1 for r in records if not r["ValidRuleR"])
+    exceptions = sum(1 for r in records if r.get("Exception"))
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Tokens", total)
     c2.metric("Valid Rule R", valid)
-    c3.metric("Errors", errors)
+    c3.metric("Parse Errors", parse_errors)
+    c4.metric("Exceptions (E1/E2/E3)", exceptions)
 
-    # trace
+    # Trace
     if max_trace > 0:
         st.subheader("Execution Trace (preview)")
         shown = 0
@@ -352,49 +441,49 @@ if st.button("Execute / Lint"):
             if shown >= max_trace:
                 break
             shown += 1
+
             if not r["ValidRuleR"]:
-                st.error("❌ {0} — {1}".format(r["token"], r["ErrorClass"]))
+                st.error("❌ {0} — {1}".format(r["token"], r.get("ParseError") or "Parse error"))
+                continue
+
+            base = "✔️ {0} → {1} | C={2} ({3}) | {4}".format(
+                r["token"], r["Operator"], r["C"], r["CoreMeaning"], r["Finalizer"]
+            )
+
+            if r.get("Exception"):
+                st.warning(base + "  ⚠️ " + r["Exception"])
             else:
-                base = "✔️ {0} → {1} | C={2} ({3}) | {4}".format(
-                    r["token"], r["Operator"], r["C"], r["CoreMeaning"], r["Finalizer"]
-                )
-                if r["ErrorClass"]:
-                    st.warning(base + "  ⚠️ " + r["ErrorClass"])
-                else:
-                    st.success(base)
+                st.success(base)
 
         if total > max_trace:
-            st.info("Trace truncated for performance. Use the table for full output.")
+            st.info("Trace truncated for performance. Use the table below for full output.")
 
-    # table + error log
+    # Tables
     if show_table:
         st.subheader("Parsed Table")
         st.dataframe(records, use_container_width=True)
 
-    if show_errors:
-        st.subheader("Error Log")
-        errs = [r for r in records if r.get("ErrorClass")]
-        if not errs:
-            st.success("No classified errors under current heuristics.")
+    if show_parse_errors:
+        st.subheader("Parse Errors (Rule R mismatch)")
+        pe = [r for r in records if not r["ValidRuleR"]]
+        if not pe:
+            st.success("No parse errors.")
         else:
-            st.dataframe(errs, use_container_width=True)
+            st.dataframe(pe, use_container_width=True)
 
-    # dy audit
+    if show_exceptions:
+        st.subheader("Exception Log (E1/E2/E3)")
+        ex = [r for r in records if r.get("Exception")]
+        if not ex:
+            st.success("No exceptions under current heuristics.")
+        else:
+            st.dataframe(ex, use_container_width=True)
+
+    # -dy audit
     if show_dy_audit:
         st.subheader("State-Transition Audit: -dy placement")
         stats = dy_paragraph_audit(records, bounds)
         st.write(
             {
                 "dy at paragraph end": "{0}/{1} ({2:.3f})".format(
-                    stats["dy_last"], stats["last_total"], stats["dy_last_rate"]
-                ),
-                "dy mid-paragraph": "{0}/{1} ({2:.3f})".format(
-                    stats["dy_mid"], stats["mid_total"], stats["dy_mid_rate"]
-                ),
-                "interpretation": "If paragraph-end rate >> mid rate, -dy behaves like an end-of-record terminator.",
-            }
-        )
-
-    # download
-    csv_data = to_csv(records).encode("utf-8")
-    st.download_button("Download CSV", data=csv_data, file_name="vvm_results.csv", mime="text/csv")
+                    stats["dy_last
