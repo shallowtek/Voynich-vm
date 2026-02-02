@@ -34,10 +34,9 @@ FINALIZERS = {
 LINE_RE = re.compile(r"<[^>]+;([HTFGU])>\s*(.*)$")
 
 # Regex fallback for non-hyphen tokens
-# Strict: core must be one of CORES (so greediness isn't an issue)
 RULE_R_STRICT = re.compile(r"^(q|p|f|ch|t|k)?(aiin|oke|ol|che)(dy|y|s|m)?$")
 
-# Linter: allow unknown cores, BUT make core non-greedy so suffix can match
+# Linter: allow unknown cores, but core non-greedy so suffix can match
 RULE_R_LINTER = re.compile(r"^(q|p|f|ch|t|k)?([a-z]+?)(dy|y|s|m)?$")
 
 # Map of common unicode hyphen/dash chars -> ASCII hyphen
@@ -52,7 +51,7 @@ DASH_CHARS = {
     "\u00ad": "-",  # soft hyphen
 }
 
-FINALIZER_KEYS = sorted(FINALIZERS.keys(), key=len, reverse=True)  # ["dy","y","s","m"]
+FINALIZER_KEYS = sorted(FINALIZERS.keys(), key=len, reverse=True)  # dy first
 
 
 def normalize_dashes(s):
@@ -88,17 +87,15 @@ def extract_stolfi_payload(text, channels):
 
 def strip_annotations(s):
     """Remove brace groups like {*}, {&I} and other markup."""
-    s = re.sub(r"\{[^}]*\}", " ", s)
-    return s
+    return re.sub(r"\{[^}]*\}", " ", s)
 
 
 def clean_payload_for_tokenizing(s):
     """
     Clean Stolfi-ish payload into something tokenizable.
-    Key behavior:
       - remove {...} annotations
       - normalize dashes
-      - REMOVE '!' without splitting words (qa!al -> qaal)
+      - remove '!' without splitting words (qa!al -> qaal)
       - treat '.' and '=' as separators
       - drop obvious garbage like '%' runs
     """
@@ -106,19 +103,10 @@ def clean_payload_for_tokenizing(s):
     s = normalize_dashes(s)
     s = s.lower()
 
-    # Remove uncertainty markers without splitting
     s = s.replace("!", "")
-
-    # Drop long %%%%% blocks entirely
     s = re.sub(r"%{3,}", " ", s)
-
-    # Make separators into spaces
     s = re.sub(r"[.=]+", " ", s)
-
-    # Other punctuation -> space
     s = re.sub(r"[,;:()\[\]\"<>]+", " ", s)
-
-    # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -126,8 +114,7 @@ def clean_payload_for_tokenizing(s):
 def tokenize_eva(s):
     """
     Convert cleaned payload into EVA-ish tokens.
-    We keep hyphens if present (for user-entered tokens like p-aiin-dy).
-    For Stolfi payload, tokens are usually bare a-z.
+    Keep hyphens if present (user-entered tokens like p-aiin-dy).
     """
     s = clean_payload_for_tokenizing(s)
     if not s:
@@ -135,9 +122,7 @@ def tokenize_eva(s):
     toks = []
     for t in s.split(" "):
         t = t.strip()
-        if not t:
-            continue
-        if re.fullmatch(r"[a-z-]+", t):
+        if t and re.fullmatch(r"[a-z-]+", t):
             toks.append(t)
     return toks
 
@@ -150,25 +135,17 @@ def paragraphize(text):
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if lines:
         return lines
-    blocks = [b.strip() for b in re.split(r"\n\s*\n", text.strip()) if b.strip()]
-    return blocks
+    return [b.strip() for b in re.split(r"\n\s*\n", text.strip()) if b.strip()]
 
 
 def parse_token_hyphen_safe(tok, strict=True):
     """
     Parse EVA token using Rule R with correct hyphen semantics.
-
-    Supports:
-      p-aiin-dy
-      ch-aiin-s
-      q-oke
-      f-ol-m
-    Also supports bare tokens (chedy, qokeedy etc).
+    Supports hyphenated tokens and bare tokens.
     """
     original = tok
     token = normalize_dashes(tok.strip().lower())
 
-    # Only EVA-ish
     if not re.fullmatch(r"[a-z-]+", token):
         return {
             "token": original, "P0": "", "C": "", "S0": "",
@@ -180,28 +157,21 @@ def parse_token_hyphen_safe(tok, strict=True):
             "Exception": "",
         }
 
-    # --------------------------
-    # Hyphen-aware parse first
-    # --------------------------
+    # Hyphen-aware parse
     if "-" in token:
-        parts = [p for p in token.split("-") if p]  # protect against double hyphens
-        p0 = ""
-        s0 = ""
-        core = ""
+        parts = [p for p in token.split("-") if p]
+        p0, s0, core = "", "", ""
 
-        # prefix
         if parts and parts[0] in OPERATORS:
             p0 = parts[0]
             parts = parts[1:]
 
-        # suffix
         if parts and parts[-1] in FINALIZERS:
             s0 = parts[-1]
             parts = parts[:-1]
 
         core = "".join(parts)
 
-        # Strict validation
         if strict and core and core not in CORES:
             return {
                 "token": original, "P0": p0, "C": core, "S0": s0,
@@ -226,18 +196,14 @@ def parse_token_hyphen_safe(tok, strict=True):
             "Exception": "",
         }
 
-    # --------------------------
-    # Non-hyphen token parsing
-    # --------------------------
+    # Non-hyphen parsing
     clean = token
 
-    # In linter mode, do deterministic split: (optional operator) + (stem) + (optional suffix)
-    # This fixes the classic issue where "chedy" would never populate "dy".
+    # Linter mode: deterministic split so chedy => core=che, s0=dy (if that’s how your mapping evolves later)
     if not strict:
         p0 = ""
         stem = clean
 
-        # operator at start: handle 'ch' before single-letter ops
         if stem.startswith("ch") and len(stem) > 2:
             p0, stem = "ch", stem[2:]
         elif stem and stem[0] in OPERATORS and len(stem) > 1:
@@ -270,7 +236,7 @@ def parse_token_hyphen_safe(tok, strict=True):
             "Exception": "",
         }
 
-    # Strict mode: use enumerated-core regex
+    # Strict mode
     m = RULE_R_STRICT.match(clean)
     if not m:
         return {
@@ -287,17 +253,6 @@ def parse_token_hyphen_safe(tok, strict=True):
     p0 = p0 or ""
     s0 = s0 or ""
 
-    if strict and core not in CORES:
-        return {
-            "token": original, "P0": p0, "C": core, "S0": s0,
-            "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
-            "CoreMeaning": "Unknown Core (strict mode)",
-            "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
-            "ValidRuleR": False,
-            "ParseError": "Unknown core (strict)",
-            "Exception": "",
-        }
-
     return {
         "token": original,
         "P0": p0,
@@ -313,23 +268,14 @@ def parse_token_hyphen_safe(tok, strict=True):
 
 
 def classify_exceptions(records, paragraph_bounds, strict):
-    """
-    Adds E1/E2/E3 heuristics as *exceptions*, not parse errors.
-
-    E2: q- with -s
-    E3: aiin drift (aiim/aiir/aiil etc) when NOT strict (linter mode)
-    E1: p- inside a paragraph dominated by pharma-ish prefixes (f/k/ch/t)
-    """
     # E2 + E3 token-level
     for r in records:
         if not r["ValidRuleR"]:
             continue
 
-        # E2
         if r["P0"] == "q" and r["S0"] == "s":
             r["Exception"] = "E2 (Type Mismatch: q- with -s)"
 
-        # E3 only in linter mode (strict=False)
         if (not strict) and r["C"]:
             if r["C"].startswith("aii") and r["C"] != "aiin":
                 if re.fullmatch(r"aii[a-z]{1,3}", r["C"]):
@@ -365,7 +311,6 @@ def classify_exceptions(records, paragraph_bounds, strict):
 
 
 def dy_paragraph_audit(records, paragraph_bounds):
-    """Compare -dy rate at paragraph ends vs mid-paragraph."""
     dy_last = 0
     last_total = 0
     dy_mid = 0
@@ -400,7 +345,6 @@ def dy_paragraph_audit(records, paragraph_bounds):
 
 
 def to_csv(rows):
-    """Minimal CSV serializer (no pandas)."""
     if not rows:
         return ""
     cols = list(rows[0].keys())
@@ -423,48 +367,28 @@ def to_csv(rows):
 st.set_page_config(page_title="Voynich VVM", layout="wide")
 st.title("📜 Voynich Virtual Machine (VVM) — Validator + Linter")
 
-# Quick “hint panel” (because the sidebar is easy to miss on mobile)
-with st.expander("👈 Controls are in the left sidebar (tap the arrow).", expanded=True):
+# Quick hint panel (sidebar is easy to miss on mobile)
+with st.expander("Controls are in the left sidebar (tap the arrow).", expanded=True):
     st.markdown(
-        "- **Input type**: Auto / Plain EVA / Stolfi block\n"
-        "- **Strict cores**: when ON, only aiin/oke/ol/che count as valid cores\n"
-        "- **Channels**: choose H/T/F/G/U for Stolfi pastes\n"
-        "- **Max trace rows**: limits UI output for performance\n"
-        "- **Tables**: toggle parsed table / errors / exceptions / dy-audit\n"
+        "- Input type: Auto / Plain EVA / Stolfi block\n"
+        "- Strict cores: when ON, only aiin/oke/ol/che count as valid cores\n"
+        "- Channels: choose H/T/F/G/U for Stolfi pastes\n"
+        "- Max trace rows: limits UI output for performance\n"
+        "- Tables: toggle parsed table / errors / exceptions / dy-audit\n"
     )
 
-with st.expander("ℹ️ About this project", expanded=False):
+with st.expander("About this project", expanded=False):
     st.markdown(
         """
-### About the Voynich Virtual Machine (VVM)
-
-The **Voynich Virtual Machine (VVM)** is an experimental validation environment for a structural theory of the Voynich Manuscript that treats the script as a **deterministic procedural system**, rather than a natural language.
-
-Under this model, Voynich tokens are interpreted as **data packets** composed of three logical fields:
-
-> **[ Header (P₀) | Payload (Core) | Footer (S₀) ]**
-
-- **Headers (Operators)** define the execution context (initialization, natural, processed, transition, etc.)
-- **Cores** encode stable identity variables (shared across domains)
-- **Footers (Finalizers)** encode termination/continuation semantics
-
-**Rule R:**  
-`[P₀] + [C] + [S₀]`
-
-The app accepts:
-- Plain EVA tokens (including hyphenated forms like `p-aiin-dy`)
-- Full Stolfi transcription blocks (channel-selectable)
-
-Outputs:
-- Parse errors (Rule-R mismatches)
-- Exception log (E1/E2/E3)
-- `-dy` paragraph-end vs mid-paragraph audit
+The VVM is an experimental validator for a structural model of Voynich tokens as deterministic packets:
+[P0 | Core | S0]. It does not translate; it checks structural consistency, flags mismatches,
+and logs heuristics (E1/E2/E3) as possible procedural execution faults.
         """
     )
 
 st.markdown(
-    "Paste **plain EVA tokens** or a **full Stolfi block**. "
-    "This app extracts tokens, applies **Rule R**, and produces a **Parse Error** + **Exception (E1/E2/E3)** log."
+    "Paste plain EVA tokens or a full Stolfi block. "
+    "The app extracts tokens, applies Rule R, and produces a Parse Error + Exception log."
 )
 
 with st.sidebar:
@@ -482,20 +406,17 @@ with st.sidebar:
     show_exceptions = st.toggle("Show exception log (E1/E2/E3)", True)
     show_dy_audit = st.toggle("Show -dy audit", True)
 
-    st.caption("Tip: If finalizers look empty, turn OFF 'Strict cores' and run in linter mode.")
+    st.caption("Tip: if finalizers look empty in Stolfi pastes, run with Strict OFF (linter mode).")
 
 default = (
-    "p-aiin-dy f-aiin-dy ch-aiin-s"
-
-    "q-oke f-ol-m q-aiin-y"
-
-    "t-ol-y p-aiin-dy"
+    "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
+    "q-oke f-ol-m q-aiin-y\n\n"
+    "t-ol-y p-aiin-dy\n"
 )
 
 text = st.text_area("Input text", value=default, height=280)
 
 if st.button("Execute / Lint"):
-    # Detect input kind
     detected = "plain"
     if input_mode == "Stolfi block":
         detected = "stolfi"
@@ -523,35 +444,33 @@ if st.button("Execute / Lint"):
             idx += len(tks)
 
     else:
-        # Remove comment lines and obvious Stolfi tags if user pasted them in plain mode
-clean_lines = []
-for ln in text.splitlines():
-    ln = ln.strip()
-    if not ln:
-        clean_lines.append("")
-        continue
-    if ln.startswith("#"):
-        continue
-    if ln.startswith("<") and ";" in ln and ">" in ln:
-        # likely Stolfi markup line
-        continue
-    clean_lines.append(ln)
+        # Plain EVA: remove comment lines and accidental Stolfi tags
+        clean_lines = []
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if not ln:
+                clean_lines.append("")
+                continue
+            if ln.startswith("#"):
+                continue
+            if ln.startswith("<") and ";" in ln and ">" in ln:
+                continue
+            clean_lines.append(ln)
 
-clean_text = "\n".join(clean_lines)
-paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip()]
+        clean_text = "\n".join(clean_lines)
+        paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip()]
         idx = 0
+
         for para in paras:
             para = normalize_dashes(para)
-            # only accept a-z and hyphen tokens
             tks = [t.lower() for t in re.findall(r"[a-zA-Z-]+", para) if re.fullmatch(r"[a-zA-Z-]+", t)]
-            tks = [t.lower() for t in tks if re.search(r"[a-z]", t)]
+            tks = [t for t in tks if re.search(r"[a-z]", t)]
             if not tks:
                 continue
             tokens.extend(tks)
             bounds.append((idx, idx + len(tks) - 1))
             idx += len(tks)
 
-    # Parse tokens
     records = [parse_token_hyphen_safe(t, strict=strict) for t in tokens]
     records = classify_exceptions(records, bounds, strict=strict)
 
@@ -566,7 +485,6 @@ paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip(
     c3.metric("Parse Errors", parse_errors)
     c4.metric("Exceptions (E1/E2/E3)", exceptions)
 
-    # Trace
     if max_trace > 0:
         st.subheader("Execution Trace (preview)")
         shown = 0
@@ -591,7 +509,6 @@ paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip(
         if total > max_trace:
             st.info("Trace truncated for performance. Use the table below for full output.")
 
-    # Tables
     if show_table:
         st.subheader("Parsed Table")
         st.dataframe(records, use_container_width=True)
@@ -612,7 +529,6 @@ paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip(
         else:
             st.dataframe(ex, use_container_width=True)
 
-    # -dy audit
     if show_dy_audit:
         st.subheader("State-Transition Audit: -dy placement")
         stats = dy_paragraph_audit(records, bounds)
@@ -628,7 +544,6 @@ paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip(
             }
         )
 
-    # Download
     csv_data = to_csv(records).encode("utf-8")
     st.download_button(
         "Download CSV",
