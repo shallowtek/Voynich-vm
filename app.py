@@ -2,11 +2,10 @@ import re
 import streamlit as st
 
 # ============================================================
-# Voynich Virtual Machine (VVM) — Robust Validator/Linter
+# Voynich Virtual Machine (VVM) — Validator/Linter
 # Streamlit Cloud friendly: no pandas, no Python 3.10+ syntax.
 # ============================================================
 
-# ---- Rule R dictionaries (dossier definitions) ----
 OPERATORS = {
     "q": "Initialization/Header",
     "p": "Natural/Raw",
@@ -30,42 +29,32 @@ FINALIZERS = {
     "m": "Pointer/Link",
 }
 
-# ---- Stolfi line matcher: <f111r.P.1;H>  payload ----
 LINE_RE = re.compile(r"<[^>]+;([HTFGU])>\s*(.*)$")
 
-# Regex fallback for non-hyphen tokens
 RULE_R_STRICT = re.compile(r"^(q|p|f|ch|t|k)?(aiin|oke|ol|che)(dy|y|s|m)?$")
-
-# Linter: allow unknown cores, but core non-greedy so suffix can match
 RULE_R_LINTER = re.compile(r"^(q|p|f|ch|t|k)?([a-z]+?)(dy|y|s|m)?$")
 
-# Map of common unicode hyphen/dash chars -> ASCII hyphen
 DASH_CHARS = {
-    "\u2010": "-",  # hyphen
-    "\u2011": "-",  # non-breaking hyphen
-    "\u2012": "-",  # figure dash
-    "\u2013": "-",  # en dash
-    "\u2014": "-",  # em dash
-    "\u2015": "-",  # horizontal bar
-    "\u2212": "-",  # minus sign
-    "\u00ad": "-",  # soft hyphen
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2015": "-",
+    "\u2212": "-",
+    "\u00ad": "-",
 }
 
 FINALIZER_KEYS = sorted(FINALIZERS.keys(), key=len, reverse=True)  # dy first
 
 
 def normalize_dashes(s):
-    """Convert various unicode dashes/hyphens to ASCII '-'."""
     for k, v in DASH_CHARS.items():
         s = s.replace(k, v)
     return s
 
 
 def split_suffix(clean):
-    """
-    Return (stem, s0) where s0 is one of FINALIZERS if present at end.
-    Conservative: only splits if the remaining stem is non-empty.
-    """
     for suf in FINALIZER_KEYS:
         if clean.endswith(suf) and len(clean) > len(suf):
             return clean[:-len(suf)], suf
@@ -73,7 +62,6 @@ def split_suffix(clean):
 
 
 def extract_stolfi_payload(text, channels):
-    """Pull payload lines from selected Stolfi channels."""
     out = []
     for raw in text.splitlines():
         m = LINE_RE.search(raw)
@@ -86,23 +74,13 @@ def extract_stolfi_payload(text, channels):
 
 
 def strip_annotations(s):
-    """Remove brace groups like {*}, {&I} and other markup."""
     return re.sub(r"\{[^}]*\}", " ", s)
 
 
 def clean_payload_for_tokenizing(s):
-    """
-    Clean Stolfi-ish payload into something tokenizable.
-      - remove {...} annotations
-      - normalize dashes
-      - remove '!' without splitting words (qa!al -> qaal)
-      - treat '.' and '=' as separators
-      - drop obvious garbage like '%' runs
-    """
     s = strip_annotations(s)
     s = normalize_dashes(s)
     s = s.lower()
-
     s = s.replace("!", "")
     s = re.sub(r"%{3,}", " ", s)
     s = re.sub(r"[.=]+", " ", s)
@@ -112,10 +90,6 @@ def clean_payload_for_tokenizing(s):
 
 
 def tokenize_eva(s):
-    """
-    Convert cleaned payload into EVA-ish tokens.
-    Keep hyphens if present (user-entered tokens like p-aiin-dy).
-    """
     s = clean_payload_for_tokenizing(s)
     if not s:
         return []
@@ -128,10 +102,6 @@ def tokenize_eva(s):
 
 
 def paragraphize(text):
-    """
-    For extracted Stolfi payload: each non-empty line is its own paragraph unit.
-    For plain EVA: paragraphs split by blank lines.
-    """
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if lines:
         return lines
@@ -139,10 +109,6 @@ def paragraphize(text):
 
 
 def parse_token_hyphen_safe(tok, strict=True):
-    """
-    Parse EVA token using Rule R with correct hyphen semantics.
-    Supports hyphenated tokens and bare tokens.
-    """
     original = tok
     token = normalize_dashes(tok.strip().lower())
 
@@ -172,6 +138,7 @@ def parse_token_hyphen_safe(tok, strict=True):
 
         core = "".join(parts)
 
+        # Strict only affects validity (not extraction)
         if strict and core and core not in CORES:
             return {
                 "token": original, "P0": p0, "C": core, "S0": s0,
@@ -196,10 +163,10 @@ def parse_token_hyphen_safe(tok, strict=True):
             "Exception": "",
         }
 
-    # Non-hyphen parsing
+    # Non-hyphen tokens
     clean = token
 
-    # Linter mode: deterministic split so chedy => core=che, s0=dy (if that’s how your mapping evolves later)
+    # Linter mode: deterministic split so suffix gets populated where possible
     if not strict:
         p0 = ""
         stem = clean
@@ -236,7 +203,7 @@ def parse_token_hyphen_safe(tok, strict=True):
             "Exception": "",
         }
 
-    # Strict mode
+    # Strict mode for bare tokens: enumerated core regex only
     m = RULE_R_STRICT.match(clean)
     if not m:
         return {
@@ -268,7 +235,6 @@ def parse_token_hyphen_safe(tok, strict=True):
 
 
 def classify_exceptions(records, paragraph_bounds, strict):
-    # E2 + E3 token-level
     for r in records:
         if not r["ValidRuleR"]:
             continue
@@ -282,7 +248,6 @@ def classify_exceptions(records, paragraph_bounds, strict):
                     if not r["Exception"]:
                         r["Exception"] = "E3 (Off-by-One Drift: aiin-variant core)"
 
-    # E1 paragraph-level
     for (a, b) in paragraph_bounds:
         ops = []
         i = a
@@ -367,29 +332,20 @@ def to_csv(rows):
 st.set_page_config(page_title="Voynich VVM", layout="wide")
 st.title("📜 Voynich Virtual Machine (VVM) — Validator + Linter")
 
-# Quick hint panel (sidebar is easy to miss on mobile)
 with st.expander("Controls are in the left sidebar (tap the arrow).", expanded=True):
     st.markdown(
         "- Input type: Auto / Plain EVA / Stolfi block\n"
-        "- Strict cores: when ON, only aiin/oke/ol/che count as valid cores\n"
-        "- Channels: choose H/T/F/G/U for Stolfi pastes\n"
+        "- Strict cores: when ON, only aiin/oke/ol/che are accepted as valid cores\n"
+        "- Channels: choose H/T/F/G/U for Stolfi\n"
         "- Max trace rows: limits UI output for performance\n"
-        "- Tables: toggle parsed table / errors / exceptions / dy-audit\n"
     )
 
-with st.expander("About this project", expanded=False):
+with st.expander("What should I paste?", expanded=False):
     st.markdown(
-        """
-The VVM is an experimental validator for a structural model of Voynich tokens as deterministic packets:
-[P0 | Core | S0]. It does not translate; it checks structural consistency, flags mismatches,
-and logs heuristics (E1/E2/E3) as possible procedural execution faults.
-        """
+        "If you want clean results on first run, paste hyphenated demo tokens like:\n"
+        "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
+        "If you paste real Stolfi EVA, turn Strict OFF first. Strict ON will treat most real tokens as invalid until the core set is expanded.\n"
     )
-
-st.markdown(
-    "Paste plain EVA tokens or a full Stolfi block. "
-    "The app extracts tokens, applies Rule R, and produces a Parse Error + Exception log."
-)
 
 with st.sidebar:
     st.header("Options")
@@ -406,12 +362,12 @@ with st.sidebar:
     show_exceptions = st.toggle("Show exception log (E1/E2/E3)", True)
     show_dy_audit = st.toggle("Show -dy audit", True)
 
-    st.caption("Tip: if finalizers look empty in Stolfi pastes, run with Strict OFF (linter mode).")
-
 default = (
-    "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
-    "q-oke f-ol-m q-aiin-y\n\n"
-    "t-ol-y p-aiin-dy\n"
+    "p-aiin-dy f-aiin-dy ch-aiin-s\n"
+    "q-oke f-ol-m q-aiin-y\n"
+    "t-ol-y p-aiin-dy\n\n"
+    "p-aiin-dy f-aiin-dy p-aiin-dy\n"
+    "q-oke q-aiin-s\n"
 )
 
 text = st.text_area("Input text", value=default, height=280)
@@ -444,7 +400,6 @@ if st.button("Execute / Lint"):
             idx += len(tks)
 
     else:
-        # Plain EVA: remove comment lines and accidental Stolfi tags
         clean_lines = []
         for ln in text.splitlines():
             ln = ln.strip()
@@ -460,7 +415,6 @@ if st.button("Execute / Lint"):
         clean_text = "\n".join(clean_lines)
         paras = [p.strip() for p in re.split(r"\n\s*\n", clean_text.strip()) if p.strip()]
         idx = 0
-
         for para in paras:
             para = normalize_dashes(para)
             tks = [t.lower() for t in re.findall(r"[a-zA-Z-]+", para) if re.fullmatch(r"[a-zA-Z-]+", t)]
@@ -531,6 +485,9 @@ if st.button("Execute / Lint"):
 
     if show_dy_audit:
         st.subheader("State-Transition Audit: -dy placement")
+        # Guardrail: audit is meaningless with tiny samples
+        if len(bounds) < 3 or total < 30:
+            st.info("Audit needs more data (try 3+ paragraphs and ~30+ tokens) for a stable signal.")
         stats = dy_paragraph_audit(records, bounds)
         st.write(
             {
