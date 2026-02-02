@@ -346,6 +346,44 @@ with st.expander("What should I paste?", expanded=False):
         "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
         "If you paste real Stolfi EVA, turn Strict OFF first. Strict ON will treat most real tokens as invalid until the core set is expanded.\n"
     )
+with st.expander("About", expanded=False):
+    st.markdown(
+        """
+About the Voynich Virtual Machine (VVM)
+
+The Voynich Virtual Machine (VVM) is an experimental validation environment for a structural theory of the Voynich Manuscript that treats the script as a deterministic procedural system, rather than a natural language.
+
+Under this model, Voynich tokens are interpreted as data packets composed of three logical fields:
+
+[ Header (P0) | Payload (Core) | Footer (S0) ]
+
+- Headers (Operators) define the execution context (initialization, natural, processed, transition, etc.)
+- Cores encode stable identity variables (shared across domains)
+- Footers (Finalizers) encode termination/continuation semantics
+
+Rule R:
+[P0] + [C] + [S0]
+
+Operators (P0):
+q (Initialization), p (Natural), f (Processed), t (Transition), k (Potentia), ch (Biological)
+
+Finalizers (S0):
+dy (Stable / End-of-record), y (Open / Continue), s (Terminal), m (Pointer / Link)
+
+Input formats:
+- Plain EVA tokens (including hyphenated forms like p-aiin-dy)
+- Full Stolfi transcription blocks (channel-selectable: H/T/F/G/U)
+
+Outputs:
+- Parse errors (Rule R mismatches)
+- Exception log (E1/E2/E3)
+- dy paragraph-end vs mid-paragraph audit
+
+Links:
+https://github.com/shallowtek/Voynich-vm
+https://voynich-vm.streamlit.app/
+        """
+    )
 
 with st.sidebar:
     st.header("Options")
