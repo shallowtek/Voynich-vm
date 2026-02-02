@@ -347,6 +347,118 @@ def to_csv(rows):
 st.set_page_config(page_title="Voynich VVM", layout="wide")
 st.title("📜 Voynich Virtual Machine (VVM) — Validator + Linter")
 
+with st.expander("ℹ️ About this project", expanded=False):
+    st.markdown("""
+    [## About the Voynich Virtual Machine (VVM)
+
+The **Voynich Virtual Machine (VVM)** is an experimental execution and validation environment for a structural theory of the Voynich Manuscript that treats the script as a **deterministic procedural system**, rather than a natural language.
+
+Under this model, Voynich tokens are interpreted as **data packets** composed of three logical fields:
+
+> **[ Header (P₀) | Payload (Core) | Footer (S₀) ]**
+
+Where:
+
+- **Headers (Operators)** define the *execution context*  
+  (e.g. initialization, natural state, processed state)
+- **Cores** encode *stable identity variables* shared across manuscript domains  
+  (botanical, pharmaceutical, balneological, astronomical)
+- **Footers (Finalizers)** encode *state termination or continuation* semantics
+
+---
+
+### Rule R: Formal Token Architecture
+
+All tokens evaluated by the VVM are tested against **Rule R**, a strict three-field structural constraint:
+
+[P₀] + [C] + [S₀]
+
+- **P₀ (Operator / Header)**  
+  `q` (Initialization), `p` (Natural), `f` (Processed),  
+  `t` (Transition), `k` (Potentia), `ch` (Biological)
+
+- **C (Core / Payload)**  
+  `aiin`, `oke`, `ol`, `che` (extensible under linter mode)
+
+- **S₀ (Finalizer / Footer)**  
+  `dy` (Stable / End-of-record),  
+  `y` (Open / Continue),  
+  `s` (Terminal),  
+  `m` (Pointer / Link)
+
+Tokens that violate this structure are flagged as **logic errors**, not spelling mistakes.
+
+---
+
+### Execution Model
+
+The VVM does **not translate** Voynichese.
+
+Instead, it executes a **structural trace** of how identity variables move through different procedural contexts.
+
+Example execution trace:
+
+p-aiin-dy   → Natural state (Herbal) f-aiin-dy   → Processed state (Pharma) ch-aiin-s   → Biological execution (Balneological)
+
+This demonstrates a **state transition** of a stable Core-ID (`aiin`) across manuscript sections.
+
+---
+
+### Error Detection & Human Execution Faults
+
+The VVM includes a rule-based **linter** that detects execution anomalies consistent with *human procedural copying*, including:
+
+- **E1 — Contextual Cache Errors**  
+  (e.g. Natural prefixes inside Pharma-dominant paragraphs)
+
+- **E2 — Type Mismatches**  
+  (e.g. Initialization headers combined with terminal suffixes)
+
+- **E3 — Off-by-One Drift**  
+  (core mutations in dense repetitive sequences)
+
+These are treated as evidence of **human rule execution**, not noise or cipher corruption.
+
+---
+
+### Input Formats
+
+The VVM accepts:
+
+- **Plain EVA-style tokens**
+- **Full Stolfi transcription blocks**  
+  (with channel selection: H / T / F / G / U)
+
+Paragraph boundaries are respected when auditing termination behavior (e.g. `-dy` placement).
+
+---
+
+### What This Tool Is (and Is Not)
+
+**This tool is:**
+- A procedural validator
+- A structural hypothesis tester
+- A falsifiable execution model
+
+**This tool is not:**
+- A translation engine
+- A linguistic decoder
+- A claim of semantic meaning
+
+---
+
+### Status
+
+This project is in **experimental / research mode**.
+
+All outputs are traceable, reproducible, and intended for collaborative analysis.
+
+Source code and documentation:
+- https://github.com/shallowtek/Voynich-vm
+- https://voynich-vm.streamlit.app/]
+
+    """)
+    
 st.markdown(
     "Paste **plain EVA tokens** or a **full Stolfi block**. "
     "This app extracts tokens, applies **Rule R**, and produces a **Parse Error** + **Exception (E1/E2/E3)** log."
@@ -372,8 +484,8 @@ default = (
     "q-oke f-ol-m q-aiin-s\n\n"
     "# You can paste a Stolfi block too; choose 'Stolfi block' or auto-detect.\n"
 )
-
-text = st.text_area("Input text", value=default, height=280)
+st.sidebar.caption("These settings change validation logic and error detection")
+text = st.text_area("Input text (see sidebar for parser & validation options)", value=default, height=280)
 
 if st.button("Execute / Lint"):
     # Detect input kind
