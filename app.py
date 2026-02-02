@@ -91,41 +91,81 @@ def paragraphize(text):
     blocks = [b.strip() for b in re.split(r"\n\s*\n", text.strip()) if b.strip()]
     return blocks
 
+def parse_token_hyphen_safe(tok, strict=True):
+    """
+    Parse EVA token using Rule R with correct hyphen semantics.
+    Supports:
+      p-aiin-dy
+      ch-aiin-s
+      q-oke
+      f-ol-m
+    """
+    token = tok.strip().lower()
 
-def parse_token(tok, strict):
-    """Parse a single token into (P0,C,S0) using Rule R."""
-    clean = tok.replace("-", "")
-    rule = RULE_R_STRICT if strict else RULE_R_LINTER
-    m = rule.match(clean)
-    if not m:
+    # Keep only EVA-ish
+    if not re.fullmatch(r"[a-z-]+", token):
         return {
-            "token": tok,
-            "P0": "",
-            "C": "",
-            "S0": "",
-            "Operator": "ERROR",
-            "CoreMeaning": "Syntax Fault / Rule-R mismatch",
-            "Finalizer": "Invalid",
-            "ValidRuleR": False,
+            "token": tok, "P0": "", "C": "", "S0": "",
+            "Operator": "ERROR", "CoreMeaning": "Non-EVA token",
+            "Finalizer": "Invalid", "ValidRuleR": False,
             "ErrorClass": "Rule R mismatch",
         }
 
-    p0, core, s0 = m.groups()
-    p0 = p0 or ""
-    s0 = s0 or ""
+    parts = token.split("-") if "-" in token else [token]
 
-    op_label = OPERATORS.get(p0, "Data Only") if p0 else "Data Only"
-    core_label = CORES.get(core, "Unknown/Unregistered Core") if not strict else CORES.get(core, "Unknown Core")
-    fin_label = FINALIZERS.get(s0, "In Transit") if s0 else "In Transit"
+    p0 = ""
+    s0 = ""
+    core = ""
+
+    # --- If hyphenated, parse by segments ---
+    if len(parts) >= 2:
+        # prefix
+        if parts[0] in OPERATORS:
+            p0 = parts[0]
+            parts = parts[1:]  # consume
+
+        # suffix
+        if parts and parts[-1] in FINALIZERS:
+            s0 = parts[-1]
+            parts = parts[:-1]  # consume
+
+        core = "".join(parts)  # usually one element, but join safely
+
+    else:
+        # --- Non-hyphen form fallback: try regex ---
+        clean = parts[0]
+        rule = RULE_R_STRICT if strict else RULE_R_LINTER
+        m = rule.match(clean)
+        if not m:
+            return {
+                "token": tok, "P0": "", "C": "", "S0": "",
+                "Operator": "ERROR", "CoreMeaning": "Syntax Fault / Rule-R mismatch",
+                "Finalizer": "Invalid", "ValidRuleR": False,
+                "ErrorClass": "Rule R mismatch",
+            }
+        p0, core, s0 = m.groups()
+        p0 = p0 or ""
+        s0 = s0 or ""
+
+    # --- Validate core set in strict mode ---
+    if strict and core not in CORES:
+        return {
+            "token": tok, "P0": p0, "C": core, "S0": s0,
+            "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
+            "CoreMeaning": "Unknown Core (strict mode)",
+            "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
+            "ValidRuleR": False,
+            "ErrorClass": "Unknown core in strict mode",
+        }
 
     return {
         "token": tok,
         "P0": p0,
         "C": core,
         "S0": s0,
-        "Operator": op_label,
-        "CoreMeaning": core_label,
-        "Finalizer": fin_label,
+        "Operator": OPERATORS.get(p0, "Data Only") if p0 else "Data Only",
+        "CoreMeaning": CORES.get(core, "Unknown/Unregistered Core"),
+        "Finalizer": FINALIZERS.get(s0, "In Transit") if s0 else "In Transit",
         "ValidRuleR": True,
         "ErrorClass": "",
     }
@@ -292,7 +332,7 @@ if st.button("Execute / Lint"):
             idx += len(tks)
 
     # parse
-    records = [parse_token(t, strict=strict) for t in tokens]
+    records = [parse_token_hyphen_safe(t, strict=strict) for t in tokens]
     records = classify_errors(records, bounds)
 
     total = len(records)
