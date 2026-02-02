@@ -97,7 +97,7 @@ def clean_payload_for_tokenizing(s):
     s = re.sub(r"[.=]+", " ", s)
 
     # Other punctuation -> space
-    s = re.sub(r"[,;:()\"<>]+", " ", s)
+    s = re.sub(r"[,;:()\[\]\"<>]+", " ", s)
 
     # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
@@ -486,4 +486,20 @@ if st.button("Execute / Lint"):
         st.write(
             {
                 "dy at paragraph end": "{0}/{1} ({2:.3f})".format(
-                    stats["dy_last
+                    stats["dy_last"], stats["last_total"], stats["dy_last_rate"]
+                ),
+                "dy mid-paragraph": "{0}/{1} ({2:.3f})".format(
+                    stats["dy_mid"], stats["mid_total"], stats["dy_mid_rate"]
+                ),
+                "interpretation": "If paragraph-end rate >> mid rate, -dy behaves like an end-of-record terminator.",
+            }
+        )
+
+    # Download
+    csv_data = to_csv(records).encode("utf-8")
+    st.download_button(
+        "Download CSV",
+        data=csv_data,
+        file_name="vvm_results.csv",
+        mime="text/csv",
+    )
