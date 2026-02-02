@@ -399,13 +399,11 @@ with st.sidebar:
     show_parse_errors = st.toggle("Show parse errors", True)
     show_exceptions = st.toggle("Show exception log (E1/E2/E3)", True)
     show_dy_audit = st.toggle("Show -dy audit", True)
-
+    
 default = (
-    "p-aiin-dy f-aiin-dy ch-aiin-s\n"
-    "q-oke f-ol-m q-aiin-y\n"
-    "t-ol-y p-aiin-dy\n\n"
-    "p-aiin-dy f-aiin-dy p-aiin-dy\n"
-    "q-oke q-aiin-s\n"
+    "p-aiin-dy f-aiin-dy ch-aiin-s\n\n"
+    "q-oke f-ol-m q-aiin-s\n\n"
+    "t-ol-y p-aiin-dy\n"
 )
 
 text = st.text_area("Input text", value=default, height=280)
